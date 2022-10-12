@@ -16,6 +16,7 @@ from humanfriendly import format_size
 from mlargparser.mlargparser import MLArgParser
 
 watchdog = Queue()
+yenc_translation_table = [214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213]
 
 
 def clean():
@@ -90,12 +91,7 @@ def ydec(name):
                     esc = False
                     c -= 64
                     
-                if 0 <= c <= 41:
-                    dec = c + 214
-                else:
-                    dec = c - 42
-                    
-            data.append(dec)
+            data.append(yenc_translation_table[c])
             
         return data
 
@@ -112,40 +108,47 @@ def ydec(name):
         d[k] = words[-1].strip()
         return d
 
-    i = 0
+    start_idx = 0
     
+    # Read in an array of binary lines
     with open(name, "rb") as f:
         lines = list(f)
         
+    # Skip any empty files
     if len(lines) == 0:
         return
     
-    while not lines[i].startswith(b"=ybegin "):
-        i += 1
+    # Skip any lines superfluous lines
+    while not lines[start_idx].startswith(b"=ybegin "):
+        start_idx += 1
         
-    header = keywords(lines[i])
-    i += 1
+    # Extract header info
+    header = keywords(lines[start_idx])
     multipart = "part" in header.keys()
-    
-    if multipart:
-        i += 1
+    start_idx += 1 + multipart
         
-    j = i
+    # We've found the beginning of the real data range
+    end_idx = start_idx
     
-    while not lines[j].startswith(b"=yend "):
-        j += 1
+    # Scan until we find the end of the real data range
+    while not lines[end_idx].startswith(b"=yend "):
+        end_idx += 1
         
-    trailer = keywords(lines[j])
-    data = decode(b"".join(lines[i:j]))
+    # Extract trailer, data, and CRC information
+    trailer = keywords(lines[end_idx])
+    data = decode(b"".join(lines[start_idx:end_idx]))     
     key = "pcrc32" if multipart else "crc32"
     
+    # Do the CRC check, if needed
     if key in trailer.keys():
         crc1 = zlib.crc32(data) & 0xFFFFFFFF
         crc2 = int(trailer[key], 16)
         
         if not crc1 == crc2:
+            log(f"CRC ERROR IN {name} ({crc1} != {crc2})") 
             return
         
+    # Write or append data to the output file
     mode = "ab" if multipart and int(header["part"]) != 1 else "wb"
     
     with open(header["name"], mode) as f:
@@ -171,6 +174,7 @@ class Slurp (MLArgParser):
         if ":" in host:
             host, port = host.split(":", 1)
             port = int(port)
+            
         try:
             s = conn(host, port)
             s.login(self.nntp_user, self.nntp_pass)
@@ -182,6 +186,7 @@ class Slurp (MLArgParser):
                     s.body("<{}>".format(segment), file=segment)
                 except nntplib.NNTPTemporaryError:
                     continue
+                
                 break
             
             s.quit()
@@ -220,6 +225,11 @@ class Slurp (MLArgParser):
             total = f["bytes"]
             pend = 0
             
+            if os.path.exists(f['name']) and os.stat(f['name']).st_size == f['bytes']:
+                log(f"File '{f['name']}' already exists. Skipping.")
+                continue
+        
+            
             while n > 0:
                 threads = []
                 
@@ -241,14 +251,12 @@ class Slurp (MLArgParser):
             
             for segment in f["segments"]:
                 ydec(segment["name"])
-                
+            
             clean()
             
         return 0
 
 if __name__ == "__main__":
-    #if parse() or len(sys.argv) == 0:
-    #    usage()
     try:
         Slurp()
         rv = 0
